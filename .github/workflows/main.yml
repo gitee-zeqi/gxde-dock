@@ -39,7 +39,7 @@ jobs:
         run: |
           debootstrap --arch amd64 \
             --include=deepin-keyring,sudo,vim \
-            crimson ./deepin-rootfs http://mirrors.kernel.org/deepin/
+            crimson ./deepin-rootfs http://mirrors.kernel.org/deepin/beige
 
       # 4. 挂载虚拟文件系统（供 chroot 使用）
       - name: Mount /proc /sys /dev
