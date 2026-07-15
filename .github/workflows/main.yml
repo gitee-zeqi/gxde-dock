@@ -31,9 +31,9 @@ jobs:
 
       - name: Bootstrap Deepin rootfs
         run: |
-          debootstrap --arch amd64 \
-            --include=deepin-keyring,sudo,vim \
-            crimson ./deepin-rootfs http://mirrors.kernel.org/deepin/beige
+          debootstrap --arch amd64 --no-check-gpg \
+          --include=deepin-keyring,sudo,vim \
+          crimson ./deepin-rootfs http://mirrors.kernel.org/deepin/beige
 
       - name: Mount /proc /sys /dev
         run: |
