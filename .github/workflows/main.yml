@@ -1,0 +1,103 @@
+name: Build Deepin Package in Chroot (from ISO config)
+
+on:
+  workflow_dispatch:                 # 手动触发
+  push:
+    tags:
+      - 'build-*'                    # 推送 build-v1.0 等标签时触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie            # 使用 Debian 13 容器
+      options: --privileged           # 需要挂载 /proc /sys 等
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # 1. 安装 debootstrap 和工具
+      - name: Install debootstrap and tools
+        run: |
+          apt-get update
+          apt-get install -y debootstrap sudo ./gxde-source_1.1.11_all.deb
+
+      # 2. 复制 ISO 构建脚本中使用的 crimson 脚本（如果存在）
+      - name: Copy crimson debootstrap script
+        run: |
+          if [ -f ./crimson ]; then
+            cp ./crimson /usr/share/debootstrap/scripts/crimson
+            echo "crimson script installed."
+          else
+            echo "Warning: crimson not found, using default (might fail)."
+          fi
+
+      # 3. 创建 Deepin chroot（使用美国镜像加速）
+      #    这里直接沿用 ISO 构建脚本中 hetao 分支的 debootstrap 命令
+      - name: Bootstrap Deepin rootfs (beige/crimson)
+        run: |
+          debootstrap --arch amd64 \
+            --include=deepin-keyring,sudo,vim \
+            crimson ./deepin-rootfs http://mirrors.kernel.org/deepin/
+
+      # 4. 挂载虚拟文件系统（供 chroot 使用）
+      - name: Mount /proc /sys /dev
+        run: |
+          mount --bind /dev ./deepin-rootfs/dev
+          mount -t proc none ./deepin-rootfs/proc
+          mount -t sysfs none ./deepin-rootfs/sys
+          mount -t devpts none ./deepin-rootfs/dev/pts
+
+      # 5. 在 chroot 内安装编译依赖
+      - name: Install build dependencies inside chroot
+        run: |
+          chroot ./deepin-rootfs /bin/bash -c "
+            apt-get update
+            apt-get install -y devscripts build-essential fakeroot
+            # 如果有 debian/control，自动安装 Build-Depends
+            if [ -f /workspace/debian/control ]; then
+              mk-build-deps -i -r -t 'apt-get --yes' /workspace/debian/control
+            fi
+          "
+
+      # 6. 将当前源码目录 bind 到 chroot 内的 /workspace
+      - name: Bind mount source code
+        run: |
+          mkdir -p ./deepin-rootfs/workspace
+          mount --bind $PWD ./deepin-rootfs/workspace
+
+      # 7. 🔥 满核心编译（榨干 GitHub 的 CPU）
+      - name: Build package with all cores
+        run: |
+          CORES=$(nproc)
+          echo "检测到 ${CORES} 个核心，开始满负荷编译..."
+          chroot ./deepin-rootfs /bin/bash -c "
+            cd /workspace
+            export DEB_BUILD_OPTIONS='parallel=${CORES}'
+            dpkg-buildpackage -us -uc -b -j${CORES}
+          "
+
+      # 8. 清理挂载点（防止 CI 报错）
+      - name: Cleanup mounts
+        if: always()
+        run: |
+          umount ./deepin-rootfs/workspace 2>/dev/null || true
+          umount ./deepin-rootfs/dev/pts 2>/dev/null || true
+          umount ./deepin-rootfs/sys 2>/dev/null || true
+          umount ./deepin-rootfs/proc 2>/dev/null || true
+          umount ./deepin-rootfs/dev 2>/dev/null || true
+
+      # 9. 收集生成的 .deb 文件
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          find ./deepin-rootfs -maxdepth 1 -name "*.deb" -exec cp {} artifacts/ \;
+          ls -lh artifacts/
+
+      # 10. 上传产物
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepin-debs
+          path: artifacts/*.deb
